@@ -1,0 +1,35 @@
+# Virtual Environment
+env/
+venv/
+
+# Environment Variables
+.env
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# Mac Files
+.DS_Store
+
+# Database
+db.sqlite3
+
+# Logs
+*.log
+
+# Static Files
+staticfiles/
+
+# Media Files
+media/
+
+# Pytest
+.pytest_cache/
+
+# Migrations (optional)
+# */migrations/*.py
+# !*/migrations/__init__.py
