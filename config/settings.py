@@ -39,11 +39,16 @@ def _load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
-_env_path = BASE_DIR / '.env'
-if load_dotenv is not None:
-    load_dotenv(_env_path)
-else:
-    _load_env_file(_env_path)
+# Prefer classic `.env` file; also support `.venv` secrets file (not a virtualenv dir).
+_env_candidates = (BASE_DIR / '.env', BASE_DIR / '.venv')
+for _env_path in _env_candidates:
+    if not _env_path.is_file():
+        continue
+    if load_dotenv is not None:
+        load_dotenv(_env_path, override=False)
+    else:
+        _load_env_file(_env_path)
+
 
 if certifi is not None:
     os.environ.setdefault('SSL_CERT_FILE', certifi.where())

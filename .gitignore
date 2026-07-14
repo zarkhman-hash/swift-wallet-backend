@@ -1,9 +1,13 @@
 # Virtual Environment
 env/
 venv/
+.env/
+.venv/
 
-# Environment Variables
+# Environment Variables / secrets (never push)
 .env
+.venv
+*.pem
 
 # Python Cache
 __pycache__/
