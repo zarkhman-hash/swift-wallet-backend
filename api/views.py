@@ -13,7 +13,9 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import EmailOTP, Transfer
-from .serializers import ResendOTPSerializer, SignupSerializer, VerifyOTPSerializer, TransferSerializer
+from .serializers import ResendOTPSerializer, SignupSerializer, VerifyOTPSerializer, TransferSerializer, UserProfileSerializer
+from .escrow import lock_in_escrow, release_from_escrow
+from decimal import Decimal
 
 User = get_user_model()
 
@@ -264,14 +266,42 @@ class SendTransferView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        serializer = TransferSerializer(data=request.data)
+        serializer = TransferSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
+
+        amount = serializer.validated_data['amount']
+        if request.user.balance < amount:
+            return Response(
+                {'detail': 'Insufficient balance to complete this transfer.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         email_errors: list[str] = []
 
         with transaction.atomic():
-            transfer = serializer.save(sender=request.user)
+            request.user.balance -= amount
+            request.user.save(update_fields=['balance'])
+
+            recipient = User.objects.filter(
+                email__iexact=serializer.validated_data['recipient_email']
+            ).first()
+            transfer = serializer.save(
+                sender=request.user,
+                sender_wallet_address=request.user.wallet_address or '',
+                recipient_wallet_address=(
+                    recipient.wallet_address if recipient else ''
+                ),
+            )
+            lock_in_escrow(transfer)
+            transfer.save(
+                update_fields=[
+                    'escrow_status',
+                    'escrow_tx_hash',
+                    'escrow_release_tx_hash',
+                ]
+            )
             transfer_id = transfer.pk
+            privacy_mode = transfer.privacy_mode
             sender_username = request.user.username
 
             def send_notification_after_commit():
@@ -282,12 +312,22 @@ class SendTransferView(APIView):
                 try:
                     frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
                     redeem_link = f"{frontend_url}/redeem/{t.id}"
-                    body = (
-                        f"You have received {t.amount} {t.token} from {sender_username}.\n\n"
-                    )
+                    if privacy_mode:
+                        body = (
+                            f"You have received {t.amount} {t.token} via SwiftWallet "
+                            f"(sender identity is protected).\n\n"
+                        )
+                    else:
+                        body = (
+                            f"You have received {t.amount} {t.token} from {sender_username}.\n\n"
+                        )
                     if t.message:
                         body += f"Message: {t.message}\n\n"
-                    body += f"Click here for redeem:\n{redeem_link}"
+                    body += (
+                        f"Funds are locked in escrow until you redeem.\n"
+                        f"Escrow TX: {t.escrow_tx_hash}\n\n"
+                        f"Click here for redeem:\n{redeem_link}"
+                    )
 
                     send_mail(
                         subject=t.subject,
@@ -302,7 +342,7 @@ class SendTransferView(APIView):
 
             transaction.on_commit(send_notification_after_commit)
 
-        payload = dict(TransferSerializer(transfer).data)
+        payload = dict(TransferSerializer(transfer, context={'request': request}).data)
         if email_errors:
             payload['email_sent'] = False
             payload['detail'] = (
@@ -323,8 +363,8 @@ class TransferDetailView(APIView):
             transfer = Transfer.objects.get(pk=pk)
         except Transfer.DoesNotExist:
             return Response({'detail': 'Transfer not found.'}, status=status.HTTP_404_NOT_FOUND)
-            
-        serializer = TransferSerializer(transfer)
+
+        serializer = TransferSerializer(transfer, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -336,12 +376,74 @@ class RedeemTransferView(APIView):
             transfer = Transfer.objects.get(pk=pk)
         except Transfer.DoesNotExist:
             return Response({'detail': 'Transfer not found.'}, status=status.HTTP_404_NOT_FOUND)
-            
+
         if transfer.status == 'redeemed':
             return Response({'detail': 'Transfer has already been redeemed.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        transfer.status = 'redeemed'
-        transfer.save(update_fields=['status'])
-        
-        serializer = TransferSerializer(transfer)
+
+        with transaction.atomic():
+            transfer.status = 'redeemed'
+            release_from_escrow(transfer)
+            transfer.save(
+                update_fields=[
+                    'status',
+                    'escrow_status',
+                    'escrow_release_tx_hash',
+                ]
+            )
+
+            # Credit recipient if registered in system
+            recipient = User.objects.filter(email__iexact=transfer.recipient_email).first()
+            if recipient:
+                recipient.balance += transfer.amount
+                recipient.save(update_fields=['balance'])
+
+        serializer = TransferSerializer(transfer, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UserProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = UserProfileSerializer(request.user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class TransferHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Q
+        transfers = Transfer.objects.filter(
+            Q(sender=request.user) | Q(recipient_email__iexact=request.user.email)
+        )
+        serializer = TransferSerializer(
+            transfers, many=True, context={'request': request}
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class TopUpView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        amount_str = request.data.get('amount')
+        if not amount_str:
+            return Response({'detail': 'Amount is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            amount = Decimal(str(amount_str))
+            if amount <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            return Response({'detail': 'Invalid amount.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            request.user.balance += amount
+            request.user.save(update_fields=['balance'])
+
+        return Response({
+            'balance': str(request.user.balance),
+            'message': f'Successfully topped up {amount} units.'
+        }, status=status.HTTP_200_OK)
+

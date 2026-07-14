@@ -20,22 +20,41 @@ try:
 except ModuleNotFoundError:
     load_dotenv = None
 
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_env_file(path: Path) -> None:
+    """Minimal .env loader so SECRET_KEY works even without python-dotenv."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, value = line.partition('=')
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_env_path = BASE_DIR / '.env'
 if load_dotenv is not None:
-    load_dotenv()
+    load_dotenv(_env_path)
+else:
+    _load_env_file(_env_path)
 
 if certifi is not None:
     os.environ.setdefault('SSL_CERT_FILE', certifi.where())
     os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
-
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY')
+SECRET_KEY = os.getenv('SECRET_KEY') or 'django-insecure-local-dev-only-change-me'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True

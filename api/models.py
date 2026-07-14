@@ -40,6 +40,12 @@ class UserManager(BaseUserManager):
         return self._create_user(username, email, password, **extra_fields)
 
 
+import secrets
+
+def generate_mock_wallet_address():
+    return "0x" + secrets.token_hex(20)
+
+
 class User(AbstractUser):
     """Custom user schema for SwiftWallet.
 
@@ -48,6 +54,16 @@ class User(AbstractUser):
 
     email = models.EmailField(unique=True)
     phone = models.CharField(max_length=20, blank=True)
+    wallet_address = models.CharField(
+        max_length=42, 
+        unique=True, 
+        default=generate_mock_wallet_address
+    )
+    balance = models.DecimalField(
+        max_digits=20, 
+        decimal_places=2, 
+        default=0.00
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -57,6 +73,7 @@ class User(AbstractUser):
 
     class Meta:
         ordering = ['-created_at']
+
 
     def __str__(self):
         return self.username
@@ -88,11 +105,19 @@ class Transfer(models.Model):
         related_name='sent_transfers',
     )
     recipient_email = models.EmailField()
+    sender_wallet_address = models.CharField(max_length=42, blank=True, default='')
+    recipient_wallet_address = models.CharField(max_length=42, blank=True, default='')
     subject = models.CharField(max_length=255)
     token = models.CharField(max_length=20)
     amount = models.DecimalField(max_digits=20, decimal_places=6)
     message = models.TextField(blank=True, null=True)
     status = models.CharField(max_length=20, default='pending')
+    # Privacy-first: when True, public redeem views hide sender identity
+    privacy_mode = models.BooleanField(default=True)
+    # Sandbox blockchain escrow (lock on send, release on redeem)
+    escrow_status = models.CharField(max_length=20, default='locked')
+    escrow_tx_hash = models.CharField(max_length=66, blank=True, default='')
+    escrow_release_tx_hash = models.CharField(max_length=66, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

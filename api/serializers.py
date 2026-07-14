@@ -56,12 +56,51 @@ class TransferSerializer(serializers.ModelSerializer):
             'sender',
             'sender_name',
             'sender_email',
+            'sender_wallet_address',
             'recipient_email',
+            'recipient_wallet_address',
             'subject',
             'token',
             'amount',
             'message',
             'status',
+            'privacy_mode',
+            'escrow_status',
+            'escrow_tx_hash',
+            'escrow_release_tx_hash',
             'created_at',
         ]
-        read_only_fields = ['id', 'sender', 'status', 'created_at']
+        read_only_fields = [
+            'id',
+            'sender',
+            'sender_wallet_address',
+            'recipient_wallet_address',
+            'status',
+            'escrow_status',
+            'escrow_tx_hash',
+            'escrow_release_tx_hash',
+            'created_at',
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        is_sender = (
+            request is not None
+            and getattr(request, 'user', None) is not None
+            and request.user.is_authenticated
+            and request.user.pk == instance.sender_id
+        )
+        # Privacy shield: recipients / public redeemers only see amount + token
+        if instance.privacy_mode and not is_sender:
+            data['sender'] = None
+            data['sender_name'] = 'Anonymous'
+            data['sender_email'] = ''
+            data['sender_wallet_address'] = ''
+        return data
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'wallet_address', 'balance']
